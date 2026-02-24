@@ -482,7 +482,7 @@ class AtomicEnergiesBlock(nnx.Module):
         self.atomic_energies = nnx.Param(init_values)
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        atomic_energies = self.atomic_energies
+        atomic_energies = self.atomic_energies.value
         # Prevent atomic reference energies from receiving gradients during training.
         atomic_energies = jax.lax.stop_gradient(atomic_energies)
         energies = jnp.atleast_2d(atomic_energies)
@@ -1546,8 +1546,8 @@ class RealAgnosticResidualNonLinearInteractionBlock(InteractionBlock):
         node_feats_res = self.truncate_ghosts(node_feats_res, n_real)
 
         # Linear + normalization
-        alpha = jnp.asarray(self.alpha, dtype=message.dtype)
-        beta = jnp.asarray(self.beta, dtype=message.dtype)
+        alpha = jnp.asarray(self.alpha.value, dtype=message.dtype)
+        beta = jnp.asarray(self.beta.value, dtype=message.dtype)
 
         message = self.linear_1(message) / (density * beta + alpha)
         message = message + node_feats_res
@@ -1575,8 +1575,8 @@ class ScaleShiftBlock(nnx.Module):
 
     def __call__(self, x: jnp.ndarray, head: jnp.ndarray) -> jnp.ndarray:
         # Match Torch behaviour (buffers) by keeping scale/shift constants during training.
-        scale = jax.lax.stop_gradient(self.scale)
-        shift = jax.lax.stop_gradient(self.shift)
+        scale = jax.lax.stop_gradient(self.scale.value)
+        shift = jax.lax.stop_gradient(self.shift.value)
 
         scale_h = jnp.atleast_1d(scale)[head]
         shift_h = jnp.atleast_1d(shift)[head]

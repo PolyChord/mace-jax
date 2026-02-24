@@ -24,7 +24,7 @@ warnings.filterwarnings(
 from flax import nnx, serialization
 from mace.tools.scripts_utils import extract_config_mace_model
 
-from mace_jax.nnx_utils import state_to_serializable_dict
+from mace_jax.nnx_utils import state_to_serializable_dict, wrap_bare_arrays
 from mace_jax.tools.foundation_models import load_foundation_torch_model
 from mace_jax.tools.import_from_torch import import_from_torch
 from mace_jax.tools.model_builder import (
@@ -35,6 +35,7 @@ from mace_jax.tools.model_builder import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import torch
+
 
 
 def _load_torch_model_from_foundations(
@@ -92,6 +93,7 @@ def _maybe_update_hidden_irreps_from_torch(
 
 
 def _serialize_for_json(value: Any) -> Any:
+    import torch  # noqa: PLC0415
     if is_dataclass(value):
         return {str(k): _serialize_for_json(v) for k, v in asdict(value).items()}
     if isinstance(value, dict):
@@ -158,6 +160,9 @@ def convert_model(
         else:
             raise
     template_data = _prepare_template_data(config)
+    # Flax NNX 0.10+ forbids bare array leaves on modules; wrap them
+    # in nnx.Variable so nnx.split can serialize them.
+    wrap_bare_arrays(jax_model)
     graphdef, state = nnx.split(jax_model)
     import_from_torch(jax_model, torch_model, state)
     variables = state_to_serializable_dict(state)
@@ -234,8 +239,16 @@ def main():
         raise RuntimeError(config['error'])
     config['torch_model_class'] = torch_model.__class__.__name__
 
+    # extract_config_mace_model may miss embedding_specs; pull from model
+    if 'embedding_specs' not in config or config.get('embedding_specs') is None:
+        es = getattr(torch_model, 'embedding_specs', None)
+        if es is not None:
+            config['embedding_specs'] = {
+                k: dict(v) if hasattr(v, 'items') else v for k, v in es.items()
+            }
+
     _, state, _ = convert_model(torch_model, config)
-    variables = state_to_pure_dict(state)
+    variables = state_to_serializable_dict(state)
 
     params_bytes = serialization.to_bytes(variables)
     output_path.write_bytes(params_bytes)

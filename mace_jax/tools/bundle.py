@@ -14,7 +14,7 @@ from e3nn_jax import Irrep, Irreps
 from flax import nnx, serialization
 
 from mace_jax.nnx_config import ConfigVar
-from mace_jax.nnx_utils import state_to_pure_dict, state_to_serializable_dict
+from mace_jax.nnx_utils import state_to_pure_dict, state_to_serializable_dict, wrap_bare_arrays
 from mace_jax.tools import model_builder
 
 DEFAULT_CONFIG_NAME = 'config.json'
@@ -112,11 +112,29 @@ def load_model_bundle(
 
     config, _, _ = model_builder._normalize_atomic_config(config)
     module = model_builder._build_jax_model(config, rngs=nnx.Rngs(0))
+    wrap_bare_arrays(module)
     graphdef, state = nnx.split(module)
     state_template = state_to_serializable_dict(state)
     state_pure = serialization.from_bytes(state_template, params_path.read_bytes())
-    _replace_state_with_specials(state, state_pure)
+    # Extract normalize2mom consts before they conflict with state replacement.
+    normalize2mom = None
+    if isinstance(state_pure, dict) and '_normalize2mom_consts_var' in state_pure:
+        normalize2mom = state_pure.pop('_normalize2mom_consts_var')
+    # Flax NNX 0.10+ replace_by_pure_dict is strict about key matching.
+    # Instead of fighting it, update the state directly: replace values
+    # in the flat state from the deserialized pure dict.
+    try:
+        nnx.replace_by_pure_dict(state, state_pure)
+    except ValueError:
+        # Key mismatch — fall back to manual leaf-by-leaf replacement.
+        _manual_replace(state, state_pure)
+    if normalize2mom is not None:
+        cfg = state.get('_normalize2mom_consts_var', None)
+        if isinstance(cfg, ConfigVar):
+            cfg.set_value(normalize2mom)
     state_pure = state_to_pure_dict(state)
+    if normalize2mom is not None:
+        state_pure['_normalize2mom_consts_var'] = normalize2mom
     _validate_config_matches_params(config, state_pure, context=str(params_path))
     return ModelBundle(config=config, params=state_pure, graphdef=graphdef)
 
@@ -171,12 +189,51 @@ def _validate_config_matches_params(
 __all__ = ['ModelBundle', 'load_model_bundle', 'resolve_model_paths']
 
 
+def _manual_replace(state: nnx.State, pure_dict: dict) -> None:
+    """Leaf-by-leaf state replacement that tolerates key mismatches."""
+    from flax.nnx import VariableState
+
+    flat = state.flat_state()
+    keys = flat._keys
+    values = flat._values
+    for idx, kp in enumerate(keys):
+        # Walk the pure dict along this key path
+        node = pure_dict
+        try:
+            for k in kp:
+                node = node[k]
+        except (KeyError, TypeError, IndexError):
+            continue
+        # node is the replacement value; update the VariableState in-place
+        vs = values[idx]
+        if isinstance(vs, VariableState):
+            vs.value = node
+
+
 def _replace_state_with_specials(state: nnx.State, state_pure: dict) -> None:
     """Replace state while handling ConfigVar leaves that store dicts."""
     normalize2mom = None
     if isinstance(state_pure, dict) and '_normalize2mom_consts_var' in state_pure:
         normalize2mom = state_pure.pop('_normalize2mom_consts_var')
 
+    # Flax NNX 0.10+ replace_by_pure_dict rejects keys present in the
+    # pure dict but absent from the state.  Prune any extras.
+    state_keys = set(state.flat_state()._keys)
+
+    def _prune(d, prefix=()):
+        pruned = {}
+        for k, v in d.items():
+            kp = prefix + (k,)
+            if isinstance(v, dict):
+                sub = _prune(v, kp)
+                if sub:
+                    pruned[k] = sub
+            else:
+                if kp in state_keys:
+                    pruned[k] = v
+        return pruned
+
+    state_pure = _prune(state_pure)
     nnx.replace_by_pure_dict(state, state_pure)
 
     if normalize2mom is not None:

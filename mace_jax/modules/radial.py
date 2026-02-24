@@ -56,9 +56,9 @@ class BesselBasis(nnx.Module):
         x = jnp.asarray(x)
         dtype = x.dtype
         if self.trainable and self.bessel_weights is not None:
-            bessel_weights = jnp.asarray(self.bessel_weights, dtype=dtype)
+            bessel_weights = jnp.asarray(self.bessel_weights.value, dtype=dtype)
         else:
-            bessel_weights = jnp.asarray(self._bessel_weights, dtype=dtype)
+            bessel_weights = jnp.asarray(self._bessel_weights.value, dtype=dtype)
 
         prefactor = jnp.sqrt(2.0 / jnp.asarray(self.r_max, dtype=dtype))
 
@@ -137,9 +137,9 @@ class GaussianBasis(nnx.Module):
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         dtype = x.dtype
         if self.trainable and self.gaussian_weights is not None:
-            gaussian_weights = jnp.asarray(self.gaussian_weights, dtype=dtype)
+            gaussian_weights = jnp.asarray(self.gaussian_weights.value, dtype=dtype)
         else:
-            gaussian_weights = jnp.asarray(self._gaussian_weights, dtype=dtype)
+            gaussian_weights = jnp.asarray(self._gaussian_weights.value, dtype=dtype)
 
         spacing = float(self.r_max) / float(self.num_basis - 1)
         coeff = jnp.asarray(-0.5 / (spacing**2), dtype=dtype)
@@ -241,8 +241,8 @@ class ZBLBasis(nnx.Module):
         Z_v = node_atomic_numbers[receiver].astype(jnp.int32)
 
         if self.trainable and self.a_exp is not None and self.a_prefactor is not None:
-            a_exp = jnp.asarray(self.a_exp, dtype=x.dtype)
-            a_prefactor = jnp.asarray(self.a_prefactor, dtype=x.dtype)
+            a_exp = jnp.asarray(self.a_exp.value, dtype=x.dtype)
+            a_prefactor = jnp.asarray(self.a_prefactor.value, dtype=x.dtype)
         else:
             a_exp = jnp.array(0.300, dtype=x.dtype)
             a_prefactor = jnp.array(0.4543, dtype=x.dtype)
@@ -335,9 +335,9 @@ class AgnesiTransform(nnx.Module):
         Z_v = node_atomic_numbers[receiver].astype(jnp.int32)
 
         if self.trainable and self.a_param is not None:
-            a = jnp.asarray(self.a_param, dtype=x.dtype)
-            q = jnp.asarray(self.q_param, dtype=x.dtype)
-            p = jnp.asarray(self.p_param, dtype=x.dtype)
+            a = jnp.asarray(self.a_param.value, dtype=x.dtype)
+            q = jnp.asarray(self.q_param.value, dtype=x.dtype)
+            p = jnp.asarray(self.p_param.value, dtype=x.dtype)
         else:
             dtype = x.dtype
             a = jnp.array(self.a, dtype=dtype)
@@ -419,7 +419,7 @@ class SoftTransform(nnx.Module):
         p_1 = (4.0 / 3.0) * r_0
         m = 0.5 * (p_0 + p_1)
         if self.trainable and self.alpha_param is not None:
-            alpha_param = jnp.asarray(self.alpha_param, dtype=dtype)
+            alpha_param = jnp.asarray(self.alpha_param.value, dtype=dtype)
         else:
             alpha_param = jnp.array(self.alpha, dtype=dtype)
         alpha = alpha_param.astype(dtype) / (p_1 - p_0)

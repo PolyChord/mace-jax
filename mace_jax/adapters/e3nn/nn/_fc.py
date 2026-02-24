@@ -159,7 +159,7 @@ class FullyConnectedNet(nnx.Module):
             layers.append(layer)
             var_in = var_out
 
-        self.layers = nnx.List(layers)
+        self.layers = list(layers)
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         """Apply each dense layer in sequence to the input array.

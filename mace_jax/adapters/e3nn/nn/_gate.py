@@ -123,8 +123,12 @@ class Gate(nnx.Module):
         self.normalize_act = normalize_act
 
         irreps_scalars = Irreps(self.irreps_scalars).simplify()
-        irreps_gates = Irreps(self.irreps_gates).simplify()
-        irreps_gated = Irreps(self.irreps_gated).simplify()
+        # Do NOT simplify gates/gated — the block constructs one gate
+        # scalar per gated irrep (e.g. 1x0e+1x0e+1x0e for 3 gated
+        # channels).  simplify() would merge them (-> 3x0e), breaking
+        # the 1-to-1 length correspondence with act_gates/act_gated.
+        irreps_gates = Irreps(self.irreps_gates)
+        irreps_gated = Irreps(self.irreps_gated)
 
         max_gate_l = max((mul_ir.ir.l for mul_ir in irreps_gates), default=0)
         max_scalar_l = max((mul_ir.ir.l for mul_ir in irreps_scalars), default=0)
@@ -133,10 +137,10 @@ class Gate(nnx.Module):
             raise ValueError(f'Gate scalars must be scalars, got {irreps_gates}')
         if len(irreps_scalars) > 0 and max_scalar_l > 0:
             raise ValueError(f'Scalars must be scalars, got {irreps_scalars}')
-        if len(irreps_gates) != len(irreps_gated):
+        if irreps_gates.num_irreps != irreps_gated.num_irreps:
             raise ValueError(
-                f'Mismatch: {len(irreps_gated)} irreps in gated, '
-                f'{len(irreps_gates)} in gates'
+                f'Mismatch: {irreps_gated.num_irreps} irreps in gated, '
+                f'{irreps_gates.num_irreps} in gates'
             )
 
         self._irreps_scalars = irreps_scalars

@@ -160,8 +160,11 @@ class SymmetricContraction(nnx.Module):
             else:
                 self.weight_basis_dim = self.weight_numel // self.mul
         else:
-            self.projection = jnp.asarray(projection)
-            self.weight_basis_dim = self.projection.shape[0]
+            _proj = jnp.asarray(projection)
+            # Wrap in nnx.Variable so flax NNX 0.10+ nnx.split() can
+            # serialize this constant (bare arrays are no longer allowed).
+            self.projection = nnx.Variable(_proj, is_mutable=False)
+            self.weight_basis_dim = _proj.shape[0]
 
         self.weight_param_shape = (self.num_elements, self.weight_basis_dim, self.mul)
         if rngs is None:
@@ -221,7 +224,8 @@ class SymmetricContraction(nnx.Module):
         """
         if self.projection is None:
             return basis_weights.astype(dtype)
-        projection = jnp.asarray(self.projection, dtype=dtype)
+        proj_val = self.projection.value if isinstance(self.projection, nnx.Variable) else self.projection
+        projection = jnp.asarray(proj_val, dtype=dtype)
         return jnp.einsum('zau,ab->zbu', basis_weights.astype(dtype), projection)
 
     def _weight_rep_from_indices(

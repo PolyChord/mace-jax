@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from flax.nnx import VariableState
 
 from mace_jax.adapters.e3nn.math import register_normalize2mom_const
 from mace_jax.nnx_config import ConfigDict, ConfigVar
@@ -57,6 +58,23 @@ def import_from_torch(jax_model, torch_model, variables):
     if isinstance(variables, nnx.State):
 
         def _extract_with_nan(value):
+            # Flax NNX 0.10+ produces VariableState (not Variable subclass)
+            # after nnx.split(); handle it before the Variable checks.
+            if isinstance(value, VariableState):
+                if issubclass(value.type, ConfigVar):
+                    config_val = value.value
+                    if isinstance(config_val, dict) and not isinstance(
+                        config_val, ConfigDict
+                    ):
+                        return ConfigDict(config_val)
+                    return config_val
+                arr = value.value
+                if issubclass(value.type, nnx.Param):
+                    if isinstance(arr, jnp.ndarray) and jnp.issubdtype(
+                        arr.dtype, jnp.floating
+                    ):
+                        return jnp.full_like(arr, jnp.nan)
+                return arr
             if isinstance(value, ConfigVar):
                 config_val = value.get_value()
                 if isinstance(config_val, dict) and not isinstance(
@@ -128,6 +146,26 @@ def import_from_torch(jax_model, torch_model, variables):
         )
 
     if isinstance(variables, nnx.State):
+        # Flax NNX 0.10+ replace_by_pure_dict rejects keys present in
+        # the pure dict but absent from the state. Import mappers may
+        # introduce extra keys (e.g. bias, kernel) when the torch model
+        # has parameters the JAX model lacks; strip them before replacing.
+        state_keys = set(variables.flat_state())
+
+        def _prune_extra_keys(d, prefix=()):
+            pruned = {}
+            for k, v in d.items():
+                kp = prefix + (k,)
+                if isinstance(v, dict):
+                    sub = _prune_extra_keys(v, kp)
+                    if sub:
+                        pruned[k] = sub
+                else:
+                    if kp in state_keys:
+                        pruned[k] = v
+            return pruned
+
+        variables_pure = _prune_extra_keys(variables_pure)
         nnx.replace_by_pure_dict(variables, variables_pure)
         if norm_consts:
             cfg = variables.get('_normalize2mom_consts_var', None)
