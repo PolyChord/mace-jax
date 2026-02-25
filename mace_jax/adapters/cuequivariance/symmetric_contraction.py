@@ -566,7 +566,27 @@ def _convert_native_weights(
     full_dim = descriptor_projection.shape[0]
     native_dim = native_weight.shape[1]
 
-    if basis_dim == reduced_dim:
+    # Check full_dim first: when basis_dim == full_dim == reduced_dim the
+    # numerical ``_compute_full_cg_transform`` is more reliable than the
+    # reduced projection shortcut (the latter applies an extra reordering that
+    # gets doubled by the forward-pass projection).
+    if basis_dim == full_dim:
+        if native_dim == full_dim:
+            transform = _compute_full_cg_transform(irreps_in, irreps_out, correlation)
+            transform = np.asarray(transform, dtype=native_weight.dtype)
+            converted = np.einsum(
+                'ab,zbu->zau', transform, native_weight, optimize=True
+            )
+        elif native_dim == reduced_dim:
+            lift = np.linalg.pinv(descriptor_projection, rcond=1e-12).astype(
+                native_weight.dtype, copy=False
+            )
+            converted = np.einsum('zau,ab->zbu', native_weight, lift, optimize=True)
+        else:
+            raise ValueError(
+                'Native SymmetricContraction weight shape mismatch during import.'
+            )
+    elif basis_dim == reduced_dim:
         if native_dim == reduced_dim:
             converted = np.einsum(
                 'zau,ab->zbu', native_weight, reduced_projection, optimize=True
@@ -580,22 +600,6 @@ def _convert_native_weights(
             converted = np.einsum(
                 'zau,ab->zbu', canonical, descriptor_projection, optimize=True
             )
-        else:
-            raise ValueError(
-                'Native SymmetricContraction weight shape mismatch during import.'
-            )
-    elif basis_dim == full_dim:
-        if native_dim == full_dim:
-            transform = _compute_full_cg_transform(irreps_in, irreps_out, correlation)
-            transform = np.asarray(transform, dtype=native_weight.dtype)
-            converted = np.einsum(
-                'ab,zbu->zau', transform, native_weight, optimize=True
-            )
-        elif native_dim == reduced_dim:
-            lift = np.linalg.pinv(descriptor_projection, rcond=1e-12).astype(
-                native_weight.dtype, copy=False
-            )
-            converted = np.einsum('zau,ab->zbu', native_weight, lift, optimize=True)
         else:
             raise ValueError(
                 'Native SymmetricContraction weight shape mismatch during import.'

@@ -228,17 +228,21 @@ class NonLinearBiasReadoutBlock(nnx.Module):
             cueq_config=self.cueq_config,
             rngs=rngs,
         )
+        # Bias parameters (torch e3nn Linear has bias for scalar irreps)
+        self.linear_mid_bias = nnx.Param(jnp.zeros(self.hidden_irreps.dim, dtype=default_dtype()))
+        self.linear_2_bias = nnx.Param(jnp.zeros(self.irrep_out.dim * max(self.num_heads, 1), dtype=default_dtype()))
 
     def __call__(
         self,
         x: IrrepsArray,
         heads: jnp.ndarray | None = None,
-    ) -> IrrepsArray:
+    ) -> jnp.ndarray:
         x = self.non_linearity_1(self.linear_1(x))
-        x = self.non_linearity_2(self.linear_mid(x))
+        # Add bias after linear_mid, before activation
+        x = self.non_linearity_2(self.linear_mid(x) + self.linear_mid_bias.value)
         if self.num_heads > 1 and heads is not None:
             x = mask_head(x, heads, self.num_heads)
-        return self.linear_2(x)
+        return self.linear_2(x) + self.linear_2_bias.value
 
 
 @nxx_register_module('mace.modules.blocks.LinearDipoleReadoutBlock')
