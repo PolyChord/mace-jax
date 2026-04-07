@@ -368,9 +368,9 @@ class MACE(nnx.Module):
                     )
                 )
 
-        self.interactions = list(interactions)
-        self.products = list(products)
-        self.readouts = list(readouts)
+        self.interactions = nnx.List(interactions)
+        self.products = nnx.List(products)
+        self.readouts = nnx.List(readouts)
 
     def __call__(
         self,
