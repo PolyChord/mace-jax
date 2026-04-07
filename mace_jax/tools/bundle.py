@@ -44,9 +44,14 @@ def resolve_model_paths(model_arg: str) -> tuple[Path, Path]:
             f'Unable to locate JAX model configuration at {config_path}'
         )
     if not params_path.exists():
-        raise FileNotFoundError(
-            f'Unable to locate serialized JAX parameters at {params_path}'
-        )
+        # Fall back to .npz (older mace-jax serialized msgpack with .npz extension)
+        npz_fallback = params_path.with_suffix('.npz')
+        if npz_fallback.exists():
+            params_path = npz_fallback
+        else:
+            raise FileNotFoundError(
+                f'Unable to locate serialized JAX parameters at {params_path}'
+            )
     return config_path, params_path
 
 
