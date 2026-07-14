@@ -368,9 +368,18 @@ class MACE(nnx.Module):
                     )
                 )
 
-        self.interactions = nnx.List(interactions)
-        self.products = nnx.List(products)
-        self.readouts = nnx.List(readouts)
+        # flax NNX 0.12+ is strict about data values on static Pytree attributes and
+        # requires nnx.List; nnx.List does not exist before flax ~0.10.7, where a
+        # plain list is both correct and what this code used previously.
+        #
+        # This is not hypothetical version-hedging: flax>=0.10.7 requires jax>=0.6.0,
+        # but ROCm 6.x caps jax at 0.5.0 (jax-rocm60-plugin publishes no 0.6.0), so
+        # LUMI's ROCm container forces flax 0.10.4. Hard-coding nnx.List makes the
+        # model unbuildable on AMD; the shim keeps one codebase working on both.
+        _List = getattr(nnx, "List", list)
+        self.interactions = _List(interactions)
+        self.products = _List(products)
+        self.readouts = _List(readouts)
 
     def __call__(
         self,
