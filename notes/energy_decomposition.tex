@@ -1,0 +1,597 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{cleveref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  urlcolor=blue!50!black,
+  citecolor=blue!50!black,
+}
+
+\newcommand{\Hop}{\hat{H}}
+\newcommand{\Top}{\hat{T}}
+\newcommand{\Vop}{\hat{V}}
+\newcommand{\Aop}{\hat{\mathcal{A}}}
+\newcommand{\Eint}{\Delta E_{\mathrm{int}}}
+\newcommand{\Eiso}{E^{(\mathrm{iso})}}
+\newcommand{\Ecpl}{E_{\mathrm{complex}}}
+\newcommand{\rmax}{r_{\mathrm{max}}}
+
+\title{Energy decomposition of interacting molecular complexes:\\
+theory and feasibility within \textsc{MACE}-jax}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We examine, starting from the many-body Schr\"odinger equation, the extent to
+which the total energy of a complex of interacting molecules can be cleanly
+partitioned into self-energies of the individual molecules and inter-molecular
+interaction contributions. We give the full many-body expansion (MBE) of the
+total energy to all orders, together with its M\"obius-inversion form. We then
+ask whether this decomposition is accessible to a trained \textsc{MACE}
+equivariant message-passing potential (specifically the present
+\texttt{mace-jax} codebase), distinguishing decompositions that follow from a
+single forward pass, those that require orchestration across sub-graph forward
+passes, and those that would require code changes or are not in principle
+accessible to a model of this class.
+\end{abstract}
+
+\section{Setting}
+
+Consider a chemical complex composed of $M$ molecules,
+$\mathcal{C} = \{1, 2, \dots, M\}$, with nuclei partitioned by molecule,
+$\{A\} = \bigsqcup_{\alpha=1}^{M} \mathcal{N}_\alpha$,
+and electrons partitioned (only formally; see \cref{sec:obstacles}) as
+$\{i\} = \bigsqcup_{\alpha=1}^{M} \mathcal{E}_\alpha$.
+We work in the Born--Oppenheimer approximation throughout.
+
+For any non-empty subset of molecules
+$S \subseteq \mathcal{C}$, write $E(S)$ for the exact ground-state electronic
+energy of the (isolated) sub-system containing the molecules indexed by $S$,
+i.e.\ the lowest eigenvalue of the electronic Hamiltonian restricted to nuclei
+in $\bigsqcup_{\alpha \in S} \mathcal{N}_\alpha$. We use the abbreviations
+$\Ecpl \equiv E(\mathcal{C})$ for the full complex and
+$\Eiso_\alpha \equiv E(\{\alpha\})$ for an isolated monomer.
+
+\section{Hamiltonian split}
+
+In atomic units the electronic Hamiltonian of the complex is
+\begin{equation}
+\Hop \;=\; -\tfrac12 \sum_{i} \nabla_i^2
+\;-\; \sum_{i,A} \frac{Z_A}{|\mathbf{r}_i - \mathbf{R}_A|}
+\;+\; \sum_{i<j} \frac{1}{|\mathbf{r}_i - \mathbf{r}_j|}
+\;+\; \sum_{A<B} \frac{Z_A Z_B}{|\mathbf{R}_A - \mathbf{R}_B|}.
+\label{eq:H-full}
+\end{equation}
+Splitting every two-index sum into ``same-molecule'' and ``different-molecule''
+contributions gives
+\begin{equation}
+\Hop \;=\; \sum_{\alpha=1}^{M} \Hop_\alpha^{(0)} \;+\; \Vop_{\mathrm{int}},
+\label{eq:H-split}
+\end{equation}
+where $\Hop_\alpha^{(0)}$ is the electronic Hamiltonian one would write down for
+molecule $\alpha$ in isolation (kinetic energy of its electrons, electron--own-nucleus
+attractions, electron--electron repulsion among its electrons, and own
+nucleus--nucleus repulsion), and $\Vop_{\mathrm{int}}$ collects all
+electron--nucleus, electron--electron and nucleus--nucleus terms in which the
+two indices belong to \emph{different} molecules:
+\begin{equation}
+\Vop_{\mathrm{int}}
+\;=\; -\!\!\sum_{\substack{i \in \mathcal{E}_\alpha \\ A \in \mathcal{N}_\beta \\ \alpha \ne \beta}}
+        \!\!\frac{Z_A}{|\mathbf{r}_i - \mathbf{R}_A|}
+\;+\; \sum_{\substack{i \in \mathcal{E}_\alpha,\, j \in \mathcal{E}_\beta \\ \alpha < \beta}}
+        \frac{1}{|\mathbf{r}_i - \mathbf{r}_j|}
+\;+\; \sum_{\substack{A \in \mathcal{N}_\alpha,\, B \in \mathcal{N}_\beta \\ \alpha < \beta}}
+        \frac{Z_A Z_B}{|\mathbf{R}_A - \mathbf{R}_B|}.
+\label{eq:V-int}
+\end{equation}
+At the operator level, \cref{eq:H-split} is exact and unambiguous.
+
+\section{Obstacles to a clean per-molecule decomposition}
+\label{sec:obstacles}
+
+\subsection*{(i) Indistinguishability of electrons}
+
+The exact ground state $\Psi$ of $\Hop$ must be antisymmetric under exchange of
+\emph{any} two electrons, including electrons that we would like to assign to
+different molecules. There is no quantum-mechanical observable that labels an
+electron as belonging to a particular monomer. Two consequences follow:
+\begin{itemize}[leftmargin=1.4em]
+\item A factorised ansatz $\Psi = \prod_\alpha \Psi_\alpha$ violates Pauli;
+\item The antisymmetrised product $\Aop \prod_\alpha \Psi_\alpha$ (Heitler--London
+type) introduces exchange/overlap cross-terms that intrinsically mix monomers
+and prevent a strict additive decomposition of expectation values.
+\end{itemize}
+In particular, $\langle \Psi | \Hop_\alpha^{(0)} | \Psi \rangle \neq \Eiso_\alpha$
+in general: the operator restricted to molecule $\alpha$ is well defined, but
+its expectation value in the supersystem state is not the isolated-monomer
+energy.
+
+\subsection*{(ii) Non-uniqueness of further decomposition}
+
+What \emph{is} unambiguous is the difference between the supersystem energy and
+the sum of isolated-monomer energies:
+\begin{equation}
+\Eint \;\equiv\; \Ecpl \;-\; \sum_{\alpha=1}^{M} \Eiso_\alpha.
+\label{eq:Eint}
+\end{equation}
+This quantity is rigorously defined (each piece is a ground-state eigenvalue)
+and basis-set-independent in the complete-basis limit. In a finite atom-centred
+basis it is contaminated by basis set superposition error (BSSE) and requires
+counterpoise correction.
+
+Decomposing $\Eint$ further into physical components
+(electrostatic, exchange-repulsion, induction/polarisation, dispersion,
+charge-transfer) is \emph{scheme-dependent}:
+\begin{itemize}[leftmargin=1.4em]
+\item \textbf{SAPT} (symmetry-adapted perturbation theory) treats
+$\Vop_{\mathrm{int}}$ perturbatively about the antisymmetrised product of
+monomer ground states, yielding an order-by-order series of contributions with
+clean physical interpretation.
+\item \textbf{Energy decomposition analyses} (Kitaura--Morokuma, ALMO-EDA,
+NEDA, \ldots) define intermediate variational states (frozen monomer densities,
+polarised but charge-transfer-free orbitals, \ldots) and read off energy
+differences. Different EDA schemes generally give numerically different, and
+sometimes qualitatively different, component energies for the same complex.
+\end{itemize}
+What \emph{is} unique, given a single convention, is the decomposition by
+cluster size: the many-body expansion.
+
+\section{The many-body expansion (MBE) to all orders}
+\label{sec:MBE}
+
+\subsection{Definition by recursion}
+
+Define $n$-body energies by recursion on $|S|$:
+\begin{align}
+\Delta E^{(1)}_{\{\alpha\}} &\;\equiv\; E(\{\alpha\}) \;=\; \Eiso_\alpha,
+\label{eq:DE1} \\[2pt]
+\Delta E^{(2)}_{\{\alpha,\beta\}} &\;\equiv\; E(\{\alpha,\beta\})
+   \;-\; \Eiso_\alpha \;-\; \Eiso_\beta,
+\label{eq:DE2} \\[2pt]
+\Delta E^{(3)}_{\{\alpha,\beta,\gamma\}} &\;\equiv\; E(\{\alpha,\beta,\gamma\})
+   \;-\!\!\!\sum_{\delta \in \{\alpha,\beta,\gamma\}}\!\!\! \Eiso_\delta
+   \;-\!\!\!\!\!\sum_{\substack{T \subset \{\alpha,\beta,\gamma\} \\ |T|=2}}
+        \!\!\!\!\!\Delta E^{(2)}_T,
+\label{eq:DE3}
+\end{align}
+and in general, for any non-empty $S \subseteq \mathcal{C}$ with $|S|=n$,
+\begin{equation}
+\boxed{\;
+\Delta E^{(n)}_{S}
+\;\equiv\; E(S)
+\;-\!\! \sum_{\varnothing \ne T \subsetneq S} \!\! \Delta E^{(|T|)}_{T}.
+\;}
+\label{eq:DEn-recursive}
+\end{equation}
+The $n$-body energy $\Delta E^{(n)}_S$ is, by construction, the part of $E(S)$
+that is \emph{not} captured by all proper-subset clusters: it is the irreducible
+$n$-body correction.
+
+\subsection{Closed form via M\"obius inversion}
+
+Equation \cref{eq:DEn-recursive} is the M\"obius inversion of $E(S)$ with
+respect to set inclusion. Solving it gives the explicit closed form
+\begin{equation}
+\boxed{\;
+\Delta E^{(n)}_{S}
+\;=\; \sum_{T \subseteq S} (-1)^{|S|-|T|} \, E(T),
+\quad |S|=n.
+\;}
+\label{eq:DEn-mobius}
+\end{equation}
+Conversely, the energy of any sub-cluster is recovered by summing $n$-body
+contributions over its own subsets,
+\begin{equation}
+E(S) \;=\; \sum_{\varnothing \ne T \subseteq S} \Delta E^{(|T|)}_{T}.
+\label{eq:E-from-DE}
+\end{equation}
+
+\subsection{Total-energy expansion}
+
+Specialising \cref{eq:E-from-DE} to $S = \mathcal{C}$ gives the many-body
+expansion of the full complex,
+\begin{equation}
+\boxed{\;
+\Ecpl
+\;=\; \sum_{\alpha} \Eiso_\alpha
+\;+\; \sum_{\alpha<\beta} \Delta E^{(2)}_{\{\alpha,\beta\}}
+\;+\; \sum_{\alpha<\beta<\gamma} \Delta E^{(3)}_{\{\alpha,\beta,\gamma\}}
+\;+\; \cdots
+\;+\; \Delta E^{(M)}_{\mathcal{C}}.
+\;}
+\label{eq:MBE-total}
+\end{equation}
+Equivalently, separating self-energies from interactions,
+\begin{equation}
+\Eint
+\;=\; \Ecpl - \sum_{\alpha} \Eiso_\alpha
+\;=\; \sum_{n=2}^{M} \;\sum_{\substack{S \subseteq \mathcal{C} \\ |S|=n}}
+        \Delta E^{(n)}_{S}.
+\label{eq:Eint-MBE}
+\end{equation}
+
+\subsection{Properties}
+
+\begin{itemize}[leftmargin=1.4em]
+\item \emph{Exactness.} The expansion in \cref{eq:MBE-total} is identically
+exact at any order, provided \emph{all} terms are retained: it terminates at
+$n = M$.
+\item \emph{Permutation symmetry.} Each $\Delta E^{(n)}_{S}$ depends only on the
+set $S$, not on a labelling of its elements; \cref{eq:DEn-mobius} is manifestly
+symmetric.
+\item \emph{Counting.} Truncating at order $n^\star$ requires
+$\sum_{n=1}^{n^\star} \binom{M}{n}$ sub-system calculations:
+$M$ monomers, $\binom{M}{2}$ dimers, $\binom{M}{3}$ trimers, etc.
+\item \emph{Convergence.} For systems dominated by short-ranged, weakly
+polarising interactions (e.g.\ hydrogen-bonded clusters, van der Waals
+complexes), the series converges quickly, with $\Delta E^{(2)}$ accounting for
+the bulk, $\Delta E^{(3)}$ giving cooperative/anti-cooperative corrections at
+the few-percent level, and $\Delta E^{(n \ge 4)}$ usually negligible. For
+metallic, highly polarisable, or strongly delocalised systems convergence is
+slow and truncation can be unreliable.
+\item \emph{BSSE.} If $E(S)$ is computed in a finite atom-centred basis, each
+sub-system uses a different basis set and \cref{eq:DEn-mobius} mixes
+inconsistent bases. Counterpoise correction (computing every $E(T)$ in the
+basis of the largest cluster of interest) restores consistency at extra cost.
+\end{itemize}
+
+\subsection{Worked example: $M = 4$}
+
+For a four-molecule complex $\mathcal{C} = \{1,2,3,4\}$, \cref{eq:MBE-total}
+reads
+\begin{equation}
+\begin{aligned}
+\Ecpl \;=\;& \sum_{\alpha=1}^{4} \Eiso_\alpha
+\;+\; \sum_{1 \le \alpha < \beta \le 4} \Delta E^{(2)}_{\{\alpha,\beta\}}
+\;+\; \sum_{1 \le \alpha < \beta < \gamma \le 4} \Delta E^{(3)}_{\{\alpha,\beta,\gamma\}}
+\;+\; \Delta E^{(4)}_{\{1,2,3,4\}},
+\end{aligned}
+\end{equation}
+with, for instance,
+\begin{align}
+\Delta E^{(2)}_{\{1,2\}} \;=\;& E(\{1,2\}) - \Eiso_1 - \Eiso_2, \\
+\Delta E^{(3)}_{\{1,2,3\}} \;=\;& E(\{1,2,3\})
+   - \!\!\sum_{\alpha \in \{1,2,3\}} \!\! \Eiso_\alpha
+   - \!\!\!\!\sum_{\substack{T \subset \{1,2,3\} \\ |T|=2}} \!\!\!\! \Delta E^{(2)}_T, \\
+\Delta E^{(4)}_{\{1,2,3,4\}} \;=\;& \sum_{T \subseteq \{1,2,3,4\}} (-1)^{4-|T|} E(T) \nonumber\\
+   \;=\;& E(\{1,2,3,4\}) \nonumber\\
+   &\;-\; \big[E(\{1,2,3\}) + E(\{1,2,4\}) + E(\{1,3,4\}) + E(\{2,3,4\})\big] \nonumber\\
+   &\;+\; \big[E(\{1,2\}) + E(\{1,3\}) + E(\{1,4\}) + E(\{2,3\}) + E(\{2,4\}) + E(\{3,4\})\big] \nonumber\\
+   &\;-\; \big[\Eiso_1 + \Eiso_2 + \Eiso_3 + \Eiso_4\big].
+\end{align}
+The pattern of alternating signs and binomial coefficients in
+\cref{eq:DEn-mobius} is visible explicitly: $\binom{4}{0}{=}\;0$ empty term,
+$\binom{4}{1}=4$ monomer terms with sign $-$, $\binom{4}{2}=6$ dimer terms with
+sign $+$, $\binom{4}{3}=4$ trimer terms with sign $-$, and the supersystem with
+sign $+$.
+
+\subsection{Summary of what is and is not unique}
+
+\begin{table}[h]
+\centering
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{lll}
+\toprule
+Quantity & Status & Caveat \\
+\midrule
+$\Ecpl$ and $\Eiso_\alpha$            & QM observable               & complete basis \\
+$\Eint = \Ecpl - \sum_\alpha \Eiso_\alpha$ & rigorous, basis-set-dep.\ at finite basis & BSSE / counterpoise \\
+$\Delta E^{(n)}_{S}$ for $n \ge 2$    & rigorous (M\"obius)         & idem. \\
+electrostatic / exchange / dispersion / \ldots & scheme-dependent (SAPT, EDA) & no canonical choice \\
+``energy of molecule $\alpha$ inside $\mathcal{C}$'' & not a QM observable    & only differences with $\Eiso_\alpha$ are \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Feasibility within \textsc{MACE}-jax}
+
+\textsc{MACE} is a strictly local, equivariant message-passing graph neural
+network potential. The trained model $f_\theta$ takes a single graph
+$G$ (atom positions, species, periodic cell, edges within a fixed cutoff
+$\rmax$) and returns a scalar energy $E_\theta(G)$ together with per-atom
+contributions $\varepsilon_i$ that satisfy
+$E_\theta(G) = \sum_{i \in G} \varepsilon_i$ by construction.
+
+\subsection{Architectural facts relevant to decomposition}
+
+The following points are observed in the present codebase
+(\texttt{mace\_jax/modules/models.py}, \texttt{mace\_jax/modules/blocks.py},
+\texttt{mace\_jax/data/neighborhood.py}, \texttt{mace\_jax/data/utils.py}):
+
+\begin{enumerate}[leftmargin=1.6em]
+\item \emph{Per-atom output, summed to total.} $L$ message-passing layers each
+emit a per-atom scalar via a readout block; these are stacked and summed to
+yield $\varepsilon_i$, and atoms are scatter-summed by graph index to yield the
+graph-level total.
+
+\item \emph{Atomic reference energies.} A per-species offset $E_0^{Z_i}$ is
+subtracted, with $\mathrm{stop\_gradient}$ applied so it is not learnt during
+training. The model already exposes
+\[
+E_\theta^{\mathrm{int}}(G) \;=\; E_\theta(G) - \sum_{i \in G} E_0^{Z_i},
+\]
+but here ``interaction'' means total minus per-atom self-energy; it is
+\emph{not} an inter-molecular interaction energy in the sense of
+\cref{eq:Eint}.
+
+\item \emph{Strict locality.} Each message-passing layer aggregates only over
+neighbours within $\rmax$. With $L$ layers, the energy of atom $i$ depends only
+on atoms within graph distance $L$, hence within Euclidean distance
+$L \cdot \rmax$ at most. The default is $L = 3$.
+
+\item \emph{No fragment indexing.} Inputs carry a \texttt{batch} array that
+groups atoms into \emph{independent} structures, but no per-atom
+``molecule'' or ``fragment'' index within a structure.
+\end{enumerate}
+
+\subsection{What the model can already compute}
+
+The supersystem decomposition \cref{eq:Eint} and the full MBE \cref{eq:MBE-total}
+are accessible without any code changes, provided one is willing to perform one
+forward pass per cluster:
+
+\begin{itemize}[leftmargin=1.4em]
+\item Build the graph for each subset $S \subseteq \mathcal{C}$ of interest
+(using only the atoms in $\bigsqcup_{\alpha \in S} \mathcal{N}_\alpha$;
+the neighbour-list builder is given the corresponding positions and the same
+$\rmax$).
+\item Evaluate $\hat E_\theta(S) \equiv f_\theta(\text{graph}(S))$, treating
+each $\hat E_\theta(S)$ as the model's surrogate for $E(S)$.
+\item Combine via \cref{eq:DEn-mobius,eq:MBE-total} to obtain
+$\widehat{\Delta E}^{(n)}_{S}$ and $\widehat{\Eint}$.
+\end{itemize}
+All sub-graphs at a given truncation order can be packed into a single padded
+batch, so practical cost is $\mathcal{O}(\sum_{n \le n^\star} \binom{M}{n})$
+forward passes.
+
+\subsection{What requires modest extra code}
+
+\paragraph{Model-internal partition by fragment.}
+Because \textsc{MACE} produces per-atom energies $\varepsilon_i$, one can also
+define, from a \emph{single} forward pass on the complex,
+\begin{equation}
+\widetilde{E}_\alpha \;\equiv\; \sum_{i \in \mathcal{N}_\alpha} \varepsilon_i\big(\mathrm{graph}(\mathcal{C})\big),
+\qquad
+\sum_{\alpha} \widetilde{E}_\alpha = \Ecpl.
+\label{eq:tilde-E}
+\end{equation}
+This implements an EDA-style ``share'' of the supersystem energy assigned to
+each molecule \emph{in situ}. It is not a quantum-mechanical observable, and it
+depends on architectural and training choices; two \textsc{MACE} models trained
+to identical totals will in general produce different per-atom partitions.
+Implementation needs:
+\begin{itemize}[leftmargin=1.4em]
+\item add an optional \texttt{fragment\_index} field to the data dict
+(length equal to \texttt{num\_atoms}); construct it during graph building;
+\item in \texttt{models.py}, after the existing per-graph
+\texttt{scatter\_sum}, perform a second \texttt{scatter\_sum} of the per-atom
+energies grouped by \texttt{fragment\_index} to produce
+$\widetilde{E}_\alpha$ as an additional output.
+\end{itemize}
+This is on the order of 10--20 lines and does not alter training.
+
+\paragraph{Many-body driver.}
+A small driver utility that, given a complex with a fragment partition,
+enumerates subsets up to a chosen $n^\star$, builds their graphs, batches the
+forward passes, and applies \cref{eq:DEn-mobius} to return
+$\{\widehat{\Delta E}^{(n)}_S\}$. Pure orchestration, no model changes.
+
+\subsection{What is not in principle accessible}
+
+\begin{itemize}[leftmargin=1.4em]
+\item \emph{Component decomposition} of $\Eint$ into electrostatic, exchange,
+induction, dispersion, and charge-transfer in the SAPT/EDA sense. These rely
+on intermediate, scheme-defined wavefunctions that the model does not
+construct. \textsc{MACE} returns a single learnt scalar; no architectural
+modification short of a different model class can recover those components
+post hoc.
+
+\item \emph{Counterpoise correction} of $\widehat{\Eint}$. \textsc{MACE} does
+not use atom-centred Gaussian basis sets, so traditional BSSE does not arise
+at inference time. However, the model has been trained against reference
+energies (DFT, CCSD(T), \ldots) that may themselves be BSSE-contaminated;
+this is a property of the training data and cannot be repaired by inference-time
+manipulation.
+
+\item \emph{Long-range physics beyond the receptive field.} Two molecules
+separated by more than $L \cdot \rmax$ are non-adjacent in the message-passing
+graph, and the model's predicted $\widehat{\Eint}$ between them is identically
+zero up to the per-species offsets. Long-range electrostatics and dispersion
+are captured only insofar as the model has been augmented with explicit
+long-range heads (learnt charges + Ewald summation, learnt dispersion
+coefficients, \ldots). Whether this is the case is a property of the model
+variant and the training set, and should be checked against the typical
+inter-molecular distances in the complex of interest before assigning physical
+meaning to a computed $\widehat{\Eint}$.
+\end{itemize}
+
+\subsection{Recommended workflow}
+
+For a complex $\mathcal{C}$ with $M$ molecules, given a trained
+\textsc{MACE}-jax model:
+\begin{enumerate}[leftmargin=1.6em]
+\item Verify that the largest inter-molecular distance of interest does not
+exceed $L \cdot \rmax$, or that an appropriate long-range correction is
+present.
+\item Compute $\widehat{E}_\theta(\mathcal{C})$ on the full complex graph.
+\item Compute $\widehat{\Eiso}_\alpha = \widehat{E}_\theta(\{\alpha\})$ for
+each monomer; report
+$\widehat{\Eint} = \widehat{E}_\theta(\mathcal{C}) - \sum_\alpha \widehat{\Eiso}_\alpha$.
+\item For a finer view, evaluate dimers and (if needed) trimers, and report
+$\widehat{\Delta E}^{(2)}_{\{\alpha,\beta\}}$ and
+$\widehat{\Delta E}^{(3)}_{\{\alpha,\beta,\gamma\}}$ via
+\cref{eq:DEn-mobius}; the residual
+$\widehat{\Eint} - \sum_{|S|=2}\widehat{\Delta E}^{(2)}_S - \sum_{|S|=3}\widehat{\Delta E}^{(3)}_S$
+diagnoses higher-body cooperativity within the model.
+\item Optionally, for an in-situ ``share'' per molecule, add the
+\texttt{fragment\_index} hook described above and report $\widetilde{E}_\alpha$
+from \cref{eq:tilde-E}, with the explicit caveat that it is a model-internal
+partition rather than a quantum observable.
+\end{enumerate}
+
+\section{Effective surfaces from a focus set}
+\label{sec:effective}
+
+\subsection{Motivation}
+
+When studying the conformational landscape of a complex it is often the case
+that not all minima are physically interesting. A common situation is that a
+designated molecule, say molecule $1$, is the actor of interest and one wishes
+to scan the energy as a function of the poses of $\{2,\dots,M\}$ around it.
+Configurations in which two spectator molecules cluster strongly with each
+other but stay far from molecule $1$ produce deep minima in $\Ecpl$ that are
+irrelevant to the question being asked.
+
+The MBE machinery of \cref{sec:MBE} suggests an obvious filter: keep only the
+many-body terms whose subset $S$ contains molecule $1$, and discard those
+confined to spectators. More generally, given a \emph{focus set}
+$F \subseteq \mathcal{C}$, define
+\begin{equation}
+E_{\mathrm{eff}}^{F}
+\;\equiv\; \!\!\!\!\sum_{\substack{S \subseteq \mathcal{C}\\ S \cap F \ne \varnothing}}
+        \!\!\!\! \Delta E^{(|S|)}_{S}.
+\label{eq:Eeff-MBE}
+\end{equation}
+Every term that survives in $E_{\mathrm{eff}}^{F}$ involves at least one
+fragment of interest; every spectator-only cluster has been cancelled out.
+
+\subsection{Closed form}
+
+The same identity \cref{eq:E-from-DE} that produces the MBE also collapses
+\cref{eq:Eeff-MBE}. Apply it once to $S = \mathcal{C}$ and once to
+$S = \mathcal{C} \setminus F$ and subtract:
+\begin{equation}
+\boxed{\;
+E_{\mathrm{eff}}^{F}
+\;=\; E(\mathcal{C}) \;-\; E(\mathcal{C} \setminus F),
+\;}
+\label{eq:Eeff-closed}
+\end{equation}
+because the cluster sums on the right share exactly the spectator-confined
+terms $\Delta E^{(|T|)}_T$ with $T \cap F = \varnothing$, which cancel pairwise.
+
+If one further wants the surface to vanish in the non-interacting limit
+(rather than approaching $\sum_{\alpha \in F} \Eiso_\alpha$), subtract the
+focus-only energy:
+\begin{equation}
+E_{\mathrm{eff}}^{F,0}
+\;\equiv\; E(\mathcal{C}) \;-\; E(\mathcal{C} \setminus F) \;-\; E(F)
+\;=\; \!\!\!\!\sum_{\substack{S \subseteq \mathcal{C}\\ S \cap F \ne \varnothing\\ S \not\subseteq F}}
+       \!\!\!\! \Delta E^{(|S|)}_{S}.
+\label{eq:Eeff0-closed}
+\end{equation}
+
+\subsection{Properties}
+
+\begin{itemize}[leftmargin=1.4em]
+\item \emph{Spectator gauge invariance.}\, Translating, rotating, or rearranging
+the spectators \emph{among themselves} while keeping each of them outside the
+receptive field of every fragment in $F$ leaves $E_{\mathrm{eff}}^{F,0}$
+identically zero (in $E_{\mathrm{eff}}^{F}$, the constant
+$\sum_{\alpha \in F}\Eiso_\alpha$ is unaffected). Spectator clustering minima
+do not appear in the surface.
+
+\item \emph{Cooperativity is preserved.}\, Three-body and higher contributions
+$\Delta E^{(n)}_{S}$ with $S \cap F \ne \varnothing$ remain in the sum at every
+order. The construction is not a 2-body truncation: many-body cooperativity
+mediated through fragments in $F$ is captured exactly.
+
+\item \emph{Cost.}\, Two energy evaluations
+($E(\mathcal{C})$, $E(\mathcal{C}\setminus F)$) for $E_{\mathrm{eff}}^{F}$, or
+three for $E_{\mathrm{eff}}^{F,0}$. No subset enumeration; cost is
+$\mathcal{O}(1)$ in $M$ at fixed $|F|$.
+
+\item \emph{Forces.}\, Applying $\nabla_{\mathbf r_i}$ to
+\cref{eq:Eeff-closed} gives, for $i \in \mathcal{N}_\alpha$ with
+$\alpha \notin F$,
+\[
+-\nabla_{\mathbf r_i} E_{\mathrm{eff}}^{F}
+\;=\; \mathbf F^{\mathcal{C}}_i \;-\; \mathbf F^{\mathcal{C}\setminus F}_i,
+\]
+i.e.\ the force on a spectator atom is the in-complex force minus the
+spectator-only force, leaving only the part mediated by $F$. For $i$ in a
+focus fragment, $E(\mathcal{C}\setminus F)$ does not depend on $\mathbf r_i$
+and the spectator-only term contributes nothing.
+\end{itemize}
+
+\subsection{Behaviour outside the receptive field}
+
+Two atoms separated by graph distance greater than $L$ in the message-passing
+graph do not communicate. If every atom of $F$ is more than $L \cdot \rmax$
+away from every atom of a particular spectator fragment $\beta$, then in
+$E(\mathcal{C})$ the contributions involving atoms of $\beta$ depend only on
+$\beta$'s own neighbourhood (which is a subset of $\mathcal{C}\setminus F$),
+and they are matched exactly by the corresponding contributions in
+$E(\mathcal{C}\setminus F)$. Hence the difference \cref{eq:Eeff-closed} is
+flat in any direction that moves $\beta$ around without bringing it within
+$L \cdot \rmax$ of $F$. This is the desired behaviour. In particular,
+neighbour-list rebuilds in $\mathcal{C}\setminus F$ produce no spurious
+edges --- edges that crossed the focus/spectator boundary in $\mathcal{C}$
+are simply absent in $\mathcal{C}\setminus F$.
+
+\subsection{Implementation: \texttt{mace\_jax/effective.py}}
+
+The construction has been wrapped as \texttt{mace\_jax.effective.EffectiveEnergy}.
+Given a fitted model and parameters with the same signature used by the
+existing ASE calculator,
+\begin{verbatim}
+from mace_jax.effective import EffectiveEnergy
+
+eff = EffectiveEnergy(model=model_fn, params=params, r_max=r_max,
+                      atomic_numbers=z_list)
+
+# fragment_index: per-atom integer fragment id (length = len(atoms)).
+# focus: iterable of fragment ids forming F.
+result = eff(atoms, fragment_index, focus={0}, baseline_subtract=True)
+
+result.energy        # E_eff^F (or E_eff^{F,0})
+result.forces        # shape (N, 3), in the original atoms layout
+result.components    # {'E_full': ..., 'E_complement': ..., 'E_focus': ...}
+\end{verbatim}
+Internally the module builds the two (or three) sub-system graphs by
+re-running the existing neighbour-list builder on the appropriate atom
+subsets, jit-compiles the predictor once, pads the graphs with a per-shape
+edge budget (so nearby geometries reuse the same compiled trace), and
+combines the energies and forces according to \cref{eq:Eeff-closed} or
+\cref{eq:Eeff0-closed}. Forces from each sub-system are scattered back into
+the full-atoms layout before being subtracted, so the returned array is
+indexed exactly as the input \texttt{atoms} object.
+
+\section{Conclusion}
+
+The two-way split of the total energy of a molecular complex into a sum of
+isolated-monomer energies and an interaction energy is theoretically
+unambiguous. Its refinement into a many-body expansion is also unique once the
+recursive convention \cref{eq:DEn-recursive} (equivalently, the M\"obius form
+\cref{eq:DEn-mobius}) is fixed, and is exact at every truncation order if all
+terms up to that order are retained. Further decomposition of the interaction
+energy into physically named components is not unique and requires choosing a
+SAPT/EDA scheme.
+
+For \textsc{MACE}-jax, the supersystem decomposition \cref{eq:Eint} and the
+full many-body expansion \cref{eq:MBE-total} are computable using only the
+existing forward pass, with no architectural changes; only orchestration over
+sub-graphs is needed. A model-internal per-fragment partition
+\cref{eq:tilde-E} is straightforward to expose with a small change to the data
+dict and the energy aggregation step. Component-style decompositions
+(electrostatic / exchange / dispersion / \ldots) are not accessible from a
+single learnt scalar potential and would require a different model class. The
+fidelity of any such decomposition is bounded by the receptive field
+$L \cdot \rmax$ and by whether the underlying training data and model variant
+account for long-range interactions.
+
+\end{document}
