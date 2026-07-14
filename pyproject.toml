@@ -5,6 +5,100 @@ requires = [
 ]
 build-backend = "setuptools.build_meta"
 
+[project]
+name = "mace_jax"
+description = "MACE in JAX/Flax."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = {file = "MIT.md"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dynamic = ["version"]
+dependencies = [
+    "chex",
+    "optax",
+    "e3nn_jax",
+    "e3nn==0.4.4",
+    "numpy",
+    "ase",
+    "matscipy",
+    "roundmantissa",
+    "jraph",
+    "jax>=0.4.23",
+    "flax",
+    "cuequivariance",
+    "cuequivariance-jax",
+    "gin-config",
+    "unique_names_generator",
+    "tqdm",
+    "h5py",
+    "configargparse",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "jax[cuda12] ; sys_platform == 'linux'",
+    "cuequivariance-ops-cu12 ; sys_platform == 'linux'",
+    "cuequivariance-ops-jax-cu12 ; sys_platform == 'linux'",
+]
+torch = [
+    "torch",
+    "cuequivariance-torch",
+    # cuequivariance-ops-torch is not on PyPI; install manually from the
+    # NVIDIA CUDA pip index when needed:
+    #   uv pip install --extra-index-url https://pypi.nvidia.com cuequivariance-ops-torch
+]
+test = [
+    "pytest",
+    "pytest-xdist",
+    "nox",
+]
+plot = [
+    "matplotlib",
+    "pandas",
+]
+wandb = [
+    "wandb",
+]
+data = [
+    "pymatgen",
+]
+lammps = [
+    "lammps",
+]
+jax-cuda12 = [
+    "jax[cuda12] ; sys_platform == 'linux'",
+]
+
+[project.scripts]
+mace-jax-hdf5-benchmark = "mace_jax.cli.mace_jax_hdf5_benchmark:main"
+mace-jax-from-torch = "mace_jax.cli.mace_jax_from_torch:main"
+mace-create-lammps-model = "mace_jax.cli.mace_jax_create_lammps_model:main"
+mace-jax-hdf5-info = "mace_jax.cli.mace_jax_hdf5_info:main"
+mace-jax-preprocess = "mace_jax.cli.mace_jax_preprocess:main"
+mace-jax-predict = "mace_jax.cli.mace_jax_predict:main"
+mace-jax-train = "mace_jax.cli.mace_jax_train:main"
+mace-jax-train-plot = "mace_jax.cli.mace_jax_train_plot:main"
+
+[tool.uv]
+# Limit universal resolution to the platforms the project actually targets;
+# cuequivariance-ops-torch wheels are not published for Windows.
+environments = [
+    "sys_platform == 'darwin'",
+    "sys_platform == 'linux'",
+]
+
+[tool.setuptools]
+packages = {find = {}}
+
+[tool.setuptools.dynamic]
+version = {attr = "mace_jax.__version__"}
+
 # Make isort compatible with black
 [tool.isort]
 profile = "black"
